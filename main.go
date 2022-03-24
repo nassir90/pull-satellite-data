@@ -1,10 +1,11 @@
-// Change category_description to categories
+// Change categoryDescription to categories
 
 
 package main
 
 import (
 	"bufio"
+	"time"
 	"os"
 	"fmt"
 	"net/http"
@@ -16,18 +17,23 @@ import (
 
 const (
 	CATEGORY_LINK_SELECTOR = ".arrow a"
+	outputDir = "descriptions/"
+	satelliteDescriptionsDir = outputDir + "satellites/"
+	categoryDescriptionsDir = outputDir + "categories/"
+	images_dir = outputDir + "images/"
 )
 
 var (
-	category_descriptions map[int]string = make(map[int]string)
+	categoryDescriptions map[int]string = make(map[int]string)
 )
 
-type category struct {
-	description string
-	index int
+type NotFoundError struct {}
+
+func (_ NotFoundError) Error() (error string) {
+	return "Not found"
 }
 
-func pull_satellite_information(nssdc_url string) (satellite_description string, error error) {
+func pullSatelliteDescription(nssdc_url string) (satelliteDescription string, error error) {
 	response, error := http.Get(nssdc_url)
 
 	if error == nil {
@@ -42,16 +48,15 @@ func pull_satellite_information(nssdc_url string) (satellite_description string,
 				paragraphs = append(paragraphs, text)
 			}
 		})
-		satellite_description = strings.Join(paragraphs, "\n")
-	} else {
-		satellite_description = ""
+		
+		satelliteDescription = strings.Join(paragraphs, "\n")
 	}
 
-	return satellite_description, error
+	return satelliteDescription, error
 }
 
-func pull_category_information(ny20_category_url string) (category_description string, error error) {
-	response, error := http.Get("https://www.n2yo.com" + ny20_category_url)
+func pullCategoryInformation(ny20CategoryURL string) (categoryDescription string, error error) {
+	response, error := http.Get("https://www.n2yo.com" + ny20CategoryURL)
 	
 	if error == nil {
 		defer response.Body.Close()
@@ -59,17 +64,49 @@ func pull_category_information(ny20_category_url string) (category_description s
 		the_table := document.Find("table").Text()
 		title := document.Find("h1").Text()
 		re := regexp.MustCompile("(.*\n)*" + title + "\\s*(?P<description>.*\n)(.*\n)*.*")
-		category_description = re.ReplaceAllString(the_table, "${description}")
+		categoryDescription = re.ReplaceAllString(the_table, "${description}")
 	} else {
-		category_description = ""
+		categoryDescription = ""
+		error = NotFoundError {}
 	}
 
-	return category_description, error
+	return categoryDescription, error
 }
 
-func pull(norad_id int) (local_category_descriptions []category, satellite_description string, error error) {
+func spawnRequests(startNoradID, endNoradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite, finished chan bool) {
+	interval, _ := time.ParseDuration("1s")
 	
-	response, error := http.Get(fmt.Sprintf("https://www.n2yo.com/satellite/?s=%d#results", norad_id))
+	for noradID:=startNoradID; noradID<=endNoradID; noradID++ {
+		go pullSatelliteInfo(noradID, categoryChannel, satelliteChannel)
+		time.Sleep(interval)
+	}
+
+	finalWait, _ := time.ParseDuration("10s")
+	time.Sleep(finalWait)
+	
+	finished <- true
+
+	return
+}
+
+func satelliteDescriptionAlreadyExists(noradID int) bool {
+	path := satelliteDescriptionsDir + strconv.Itoa(noradID)
+	_, err := os.Stat(path)
+	
+	return err == nil
+}
+
+func categoryAlreadyExists(categoryID int) bool {
+	path := categoryDescriptionsDir + strconv.Itoa(categoryID)
+	_, err := os.Stat(path)
+
+	return err == nil
+}
+
+func pullSatelliteInfo(noradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite) {
+	response, error := http.Get(fmt.Sprintf("https://www.n2yo.com/satellite/?s=%d#results", noradID))
+	
+	satellite := satellite{noradID:noradID}
 	
 	if error == nil {
 		defer response.Body.Close()
@@ -78,109 +115,106 @@ func pull(norad_id int) (local_category_descriptions []category, satellite_descr
 		
 		document.Find(".arrow a").Each(
 			func(i int, selection *goquery.Selection) {
-				ny20_category_url, _ := selection.Attr("href")
-				number_at_end, _ := strconv.Atoi(re.FindString(ny20_category_url))
-				_, exists := category_descriptions[number_at_end]
+				ny20CategoryURL, _ := selection.Attr("href")
+				categoryID, _ := strconv.Atoi(re.FindString(ny20CategoryURL))
+				
+				if ! categoryAlreadyExists(categoryID) { 
+					categoryDescription, _ := pullCategoryInformation(ny20CategoryURL)
+					categoryMap := make(map[int]string)
+					categoryMap[categoryID] = categoryDescription
+					categoryChannel <- categoryMap
+				}
 
-				var category_description string
-				
-				if ! exists { 
-					category_description, _ = pull_category_information(ny20_category_url)
-					category_descriptions[number_at_end] = category_description
-				} else {
-					category_description = category_descriptions[number_at_end]
-				}
-				
-				local_category_descriptions = append(local_category_descriptions, category {description:category_description, index:number_at_end})
+				satellite.categories = append(satellite.categories, categoryID)
 			})
+
 		
-		document.Find("tbody a").Each(
-			func(i int, selection *goquery.Selection) {
-				nssdc_url, _ := selection.Attr("href")
-				if strings.Contains(nssdc_url, "nssdc.gsfc.nasa.gov") {
-					satellite_description, _ = pull_satellite_information(nssdc_url)
-				}
-			})
+		if ! satelliteDescriptionAlreadyExists(noradID) {
+			document.Find("tbody a").Each(
+				func(i int, selection *goquery.Selection) {
+					nssdcURL, _ := selection.Attr("href")
+					if strings.Contains(nssdcURL, "nssdc.gsfc.nasa.gov") {
+						satelliteDescription, _ := pullSatelliteDescription(nssdcURL)
+						satellite.description = satelliteDescription
+						
+					}
+				})
+		}
 	}
+
+	satelliteChannel <- satellite
 
 	return
 }
 
+type satellite struct {
+	noradID int
+	description string
+	categories []int
+}
+
 func main() {
-
-	const (
-		output_dir = "descriptions/"
-		satellite_descriptions_dir = output_dir + "satellites/"
-		category_descriptions_dir = output_dir + "categories/"
-		images_dir = output_dir + "images/"
-	)
-
-	os.Mkdir(output_dir, 0755)
-	os.Mkdir(satellite_descriptions_dir, 0755)
-	os.Mkdir(category_descriptions_dir, 0755)
-
-	type satellite struct {
-		norad_id int
-		has_description bool
-		categories []int
-	}
-
-	var satellites []satellite
+	categoryChannel := make(chan map[int]string)
+	satelliteChannel := make(chan satellite)
+	finished := make(chan bool, 1)
 	
-	for i:=0; i<53000; i++ {
-		categories, satellite_description, _ := pull(i)
+	go spawnRequests(0, 10, categoryChannel, satelliteChannel, finished)
 
-		satellite := satellite {norad_id: i}
+	os.Mkdir(outputDir, 0755)
+	os.Mkdir(satelliteDescriptionsDir, 0755)
+	os.Mkdir(categoryDescriptionsDir, 0755)
 
-		if len(satellite_description) != 0 {
-			path := satellite_descriptions_dir + strconv.Itoa(i)
-			_, err := os.Stat(path)
-			if err != nil {
-				data := []byte(satellite_description)
-				os.WriteFile(path, data, 0644)
-			}
-
-			satellite.has_description = true
-		} else {
-			satellite.has_description = false
-		}
-		
-		for _, category := range categories {
-			path := category_descriptions_dir + strconv.Itoa(category.index)
-			_, err := os.Stat(path)
-			if err != nil {
-				data := []byte(category.description)
-				os.WriteFile(path, data, 0644)
-			}
-			satellite.categories = append(satellite.categories, category.index)
-		}
-
-		satellites = append(satellites, satellite)
-	}
-
-	
-	f, _ := os.Create(output_dir + "satellites.tsv")
+	f, _ := os.Create(outputDir + "satellites.tsv")
 	defer f.Close()
 	w := bufio.NewWriter(f)
 	
-	for _, satellite := range satellites {
-		// Gotards be like: Why would you need the ternary operator?
-		flag := ""
-		if satellite.has_description {
-			flag = "?"
-		}
-
-		categories := ""
-		for i, category := range satellite.categories {
-			if i != len(satellite.categories) - 1 {
-				categories += strconv.Itoa(category) + ","
-			} else {
-				categories += strconv.Itoa(category)
+	for {
+		select {
+		case categories := <-categoryChannel:
+			fmt.Println("Received categories", categories)
+			for index, description := range categories {
+				path := categoryDescriptionsDir + strconv.Itoa(index)
+				data := []byte(description)
+				os.WriteFile(path, data, 0644)
 			}
-		}
+			
+		case satellite := <-satelliteChannel:
+			fmt.Println("Received satellite with noradID", satellite.noradID)
+			if len(satellite.description) != 0 {
+				path := satelliteDescriptionsDir + strconv.Itoa(satellite.noradID)
+				data := []byte(satellite.description)
+				os.WriteFile(path, data, 0644)
+				fmt.Println("\tLoaded description")
+			} else {
+				fmt.Println("\tDescription exists on disk or doesn't exist online. Not saving.")
+			}
+			
+			descriptionFlag := ""
+			if len(satellite.description) == 0 {
+				descriptionFlag = "?"
+			}
 
-		w.WriteString(fmt.Sprintf("%d\t%s\t%s", satellite.norad_id, flag, categories))
+			categoryString := ""
+			for i, category := range satellite.categories {
+				if i != len(satellite.categories) - 1 {
+					categoryString += strconv.Itoa(category) + ","
+				} else {
+					categoryString += strconv.Itoa(category)
+				}
+			}
+
+			w.WriteString(fmt.Sprintf("%d\t%s\t%s\n", satellite.noradID, descriptionFlag, categoryString))
+			w.Flush()
+			
+			if len(categoryString) != 0 {
+				fmt.Println("\tCategories:", categoryString)
+			} else {
+				fmt.Println("\tNo categories")
+			}
+			
+		case <-finished:
+			fmt.Println("Done")
+			return
+		}
 	}
-	
-	w.Flush()
 }

@@ -1,11 +1,10 @@
-// Change categoryDescription to categories
-
-
 package main
 
 import (
 	"flag"
+	"path"
 	"time"
+	"io/ioutil"
 	"os"
 	"fmt"
 	"net/http"
@@ -21,12 +20,17 @@ const (
 	satelliteDescriptionsDir = outputDir + "satellites/"
 	categoryDescriptionsDir = outputDir + "categories/"
 	imagesDir = outputDir + "images/"
-	images_dir = outputDir + "images/"
 )
 
 var (
 	categoryDescriptions map[int]string = make(map[int]string)
 )
+
+type image struct {
+	data []byte
+	noradID int
+	basename string
+}
 
 type NotFoundError struct {}
 
@@ -34,7 +38,7 @@ func (_ NotFoundError) Error() (error string) {
 	return "Not found"
 }
 
-func pullSatelliteDescription(nssdc_url string) (satelliteDescription string, error error) {
+func pullSatelliteDescription(noradID int, nssdc_url string) (satelliteDescription string, images []image, error error) {
 	response, error := http.Get(nssdc_url)
 
 	if error == nil {
@@ -43,17 +47,32 @@ func pullSatelliteDescription(nssdc_url string) (satelliteDescription string, er
 		
 		var paragraphs []string
 		
-		document.Find(".urone p").Each(func(i int, selection *goquery.Selection) {
-			text := selection.Text()
-			if len(strings.TrimSpace(text)) != 0 {
-				paragraphs = append(paragraphs, text)
-			}
-		})
+		document.Find(".urone p").Each(
+			func(i int, selection *goquery.Selection) {
+				text := selection.Text()
+				if len(strings.TrimSpace(text)) != 0 {
+					paragraphs = append(paragraphs, text)
+				}
+			})
+
+		document.Find("#leftcontent img").Each(
+			func(i int, selection *goquery.Selection) {
+				src, _ := selection.Attr("src")
+				if ! imageAlreadyExists(path.Base(src), noradID) {
+					imageResponse, error := http.Get(src)
+					if error == nil {
+						defer imageResponse.Body.Close()
+						basename := path.Base(src)
+						data, _ := ioutil.ReadAll(imageResponse.Body)
+						images = append(images, image{data: data, noradID: noradID, basename: basename})
+					}
+				}
+			})
 		
 		satelliteDescription = strings.Join(paragraphs, "\n")
 	}
 
-	return satelliteDescription, error
+	return
 }
 
 func pullCategoryInformation(ny20CategoryURL string) (categoryDescription string, error error) {
@@ -74,11 +93,11 @@ func pullCategoryInformation(ny20CategoryURL string) (categoryDescription string
 	return categoryDescription, error
 }
 
-func spawnRequests(startNoradID, endNoradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite, finished chan bool) {
+func spawnRequests(startNoradID, endNoradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite, imagesChannel chan image, finished chan bool) {
 	interval, _ := time.ParseDuration("0.5s")
 	
 	for noradID:=startNoradID; noradID<=endNoradID; noradID++ {
-		go pullSatelliteInfo(noradID, categoryChannel, satelliteChannel)
+		go pullSatelliteInfo(noradID, categoryChannel, satelliteChannel, imagesChannel)
 		time.Sleep(interval)
 	}
 
@@ -88,6 +107,19 @@ func spawnRequests(startNoradID, endNoradID int, categoryChannel chan map[int]st
 	finished <- true
 
 	return
+}
+
+func imageAlreadyExists(basename string, noradID int) bool {
+	dir := imagesDir + strconv.Itoa(noradID) + "/"
+	images, _ := os.ReadDir(dir)
+	
+	for _, image := range images {
+		if basename == image.Name() {
+			return true
+		}
+	}
+
+	return false
 }
 
 func satelliteDescriptionAlreadyExists(noradID int) bool {
@@ -104,7 +136,7 @@ func categoryAlreadyExists(categoryID int) bool {
 	return err == nil
 }
 
-func pullSatelliteInfo(noradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite) {
+func pullSatelliteInfo(noradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite, imagesChannel chan image) {
 	response, error := http.Get(fmt.Sprintf("https://www.n2yo.com/satellite/?s=%d#results", noradID))
 	
 	satellite := satellite{noradID:noradID}
@@ -135,11 +167,25 @@ func pullSatelliteInfo(noradID int, categoryChannel chan map[int]string, satelli
 				func(i int, selection *goquery.Selection) {
 					nssdcURL, _ := selection.Attr("href")
 					if strings.Contains(nssdcURL, "nssdc.gsfc.nasa.gov") {
-						satelliteDescription, _ := pullSatelliteDescription(nssdcURL)
+						// Don't need to pass noradID, it can be specified here
+						satelliteDescription, images, _ := pullSatelliteDescription(noradID, nssdcURL)
 						satellite.description = satelliteDescription
-						
+						for _, image := range images {
+							imagesChannel <- image
+						}
 					}
 				})
+			
+		}
+	}
+
+	imageURL := fmt.Sprintf("https://www.heavens-above.com/images/satellites/%05d.jpg", noradID)
+	if ! imageAlreadyExists(path.Base(imageURL), noradID) {
+		imageData, error := http.Get(imageURL)
+		if error == nil && imageData.StatusCode != 404 {
+			defer imageData.Body.Close()
+			data, _ := ioutil.ReadAll(imageData.Body)
+			imagesChannel <- image{ data: data, noradID: noradID, basename: path.Base(imageURL) }
 		}
 	}
 
@@ -151,6 +197,7 @@ func pullSatelliteInfo(noradID int, categoryChannel chan map[int]string, satelli
 type satellite struct {
 	noradID int
 	description string
+	images []image
 	categories []int
 }
 
@@ -173,13 +220,15 @@ func main() {
 	
 	categoryChannel := make(chan map[int]string)
 	satelliteChannel := make(chan satellite)
+	imagesChannel := make(chan image)
 	finished := make(chan bool, 1)
 	
-	go spawnRequests(*startNoradID, *endNoradID, categoryChannel, satelliteChannel, finished)
+	go spawnRequests(*startNoradID, *endNoradID, categoryChannel, satelliteChannel, imagesChannel, finished)
 
 	os.Mkdir(outputDir, 0755)
 	os.Mkdir(satelliteDescriptionsDir, 0755)
 	os.Mkdir(categoryDescriptionsDir, 0755)
+	os.Mkdir(imagesDir, 0755)
 	
 	for {
 		select {
@@ -205,9 +254,7 @@ func main() {
 				path := satelliteDescriptionsDir + strconv.Itoa(satellite.noradID)
 				data := []byte(satellite.description)
 				os.WriteFile(path, data, 0644)
-				fmt.Println("\tLoaded description")
-			} else {
-				fmt.Println("\tDescription exists on disk or doesn't exist online. Not saving.")
+				fmt.Println("\tSaved description.")
 			}
 
 			categoryString := categoryArrayToString(satellite.categories)
@@ -216,9 +263,14 @@ func main() {
 			
 			if len(categoryString) != 0 {
 				fmt.Println("\tCategories:", categoryString)
-			} else {
-				fmt.Println("\tNo categories")
 			}
+
+		case image := <- imagesChannel:
+			fmt.Println("Received image from satellite with noradID", image.noradID)
+			noradIDString := strconv.Itoa(image.noradID)
+			specificOutputDir := imagesDir + noradIDString + "/"
+			os.Mkdir(specificOutputDir, 0755)
+			os.WriteFile(specificOutputDir + image.basename, image.data, 0644)
 			
 		case <-finished:
 			fmt.Println("Done")

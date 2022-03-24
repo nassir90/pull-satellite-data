@@ -4,6 +4,7 @@
 package main
 
 import (
+	"flag"
 	"bufio"
 	"time"
 	"os"
@@ -154,11 +155,15 @@ type satellite struct {
 }
 
 func main() {
+	startNoradID := flag.Int("s", 0, "Norad ID to start at")
+	endNoradID := flag.Int("e", 53000, "Norad ID to end at")
+	fmt.Println("Pulling satellites starting at noradID", *startNoradID, "and finishing with", *endNoradID)
+	
 	categoryChannel := make(chan map[int]string)
 	satelliteChannel := make(chan satellite)
 	finished := make(chan bool, 1)
 	
-	go spawnRequests(0, 10, categoryChannel, satelliteChannel, finished)
+	go spawnRequests(*startNoradID, *endNoradID, categoryChannel, satelliteChannel, finished)
 
 	os.Mkdir(outputDir, 0755)
 	os.Mkdir(satelliteDescriptionsDir, 0755)

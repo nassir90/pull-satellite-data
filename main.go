@@ -5,7 +5,6 @@ package main
 
 import (
 	"flag"
-	"bufio"
 	"time"
 	"os"
 	"fmt"
@@ -169,10 +168,6 @@ func main() {
 	os.Mkdir(outputDir, 0755)
 	os.Mkdir(satelliteDescriptionsDir, 0755)
 	os.Mkdir(categoryDescriptionsDir, 0755)
-
-	f, _ := os.Create(outputDir + "satellites.tsv")
-	defer f.Close()
-	w := bufio.NewWriter(f)
 	
 	for {
 		select {
@@ -194,11 +189,6 @@ func main() {
 			} else {
 				fmt.Println("\tDescription exists on disk or doesn't exist online. Not saving.")
 			}
-			
-			descriptionFlag := ""
-			if len(satellite.description) == 0 {
-				descriptionFlag = "?"
-			}
 
 			categoryString := ""
 			for i, category := range satellite.categories {
@@ -209,8 +199,7 @@ func main() {
 				}
 			}
 
-			w.WriteString(fmt.Sprintf("%d\t%s\t%s\n", satellite.noradID, descriptionFlag, categoryString))
-			w.Flush()
+			os.WriteFile(satelliteDescriptionsDir + strconv.Itoa(satellite.noradID) + "-categories", []byte(categoryString), 0644)
 			
 			if len(categoryString) != 0 {
 				fmt.Println("\tCategories:", categoryString)

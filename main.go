@@ -20,6 +20,7 @@ const (
 	outputDir = "descriptions/"
 	satelliteDescriptionsDir = outputDir + "satellites/"
 	categoryDescriptionsDir = outputDir + "categories/"
+	imagesDir = outputDir + "images/"
 	images_dir = outputDir + "images/"
 )
 
@@ -74,7 +75,7 @@ func pullCategoryInformation(ny20CategoryURL string) (categoryDescription string
 }
 
 func spawnRequests(startNoradID, endNoradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite, finished chan bool) {
-	interval, _ := time.ParseDuration("1s")
+	interval, _ := time.ParseDuration("0.5s")
 	
 	for noradID:=startNoradID; noradID<=endNoradID; noradID++ {
 		go pullSatelliteInfo(noradID, categoryChannel, satelliteChannel)
@@ -153,6 +154,17 @@ type satellite struct {
 	categories []int
 }
 
+func categoryArrayToString(categories []int) (categoryString string) {
+	for i, category := range categories {
+		categoryString += strconv.Itoa(category)
+		if i != len(categories) - 1 {
+			categoryString +=  ","
+		}
+	}
+
+	return
+}
+
 func main() {
 	startNoradID := flag.Int("s", 0, "Norad ID to start at")
 	endNoradID := flag.Int("e", 53000, "Norad ID to end at")
@@ -172,7 +184,15 @@ func main() {
 	for {
 		select {
 		case categories := <-categoryChannel:
-			fmt.Println("Received categories", categories)
+			var categoryArray []int
+
+			for k, _ := range categories {
+				categoryArray = append(categoryArray, k)
+			}
+
+			categoryString := categoryArrayToString(categoryArray)
+			
+			fmt.Println("Received categories:", categoryString)
 			for index, description := range categories {
 				path := categoryDescriptionsDir + strconv.Itoa(index)
 				data := []byte(description)
@@ -190,14 +210,7 @@ func main() {
 				fmt.Println("\tDescription exists on disk or doesn't exist online. Not saving.")
 			}
 
-			categoryString := ""
-			for i, category := range satellite.categories {
-				if i != len(satellite.categories) - 1 {
-					categoryString += strconv.Itoa(category) + ","
-				} else {
-					categoryString += strconv.Itoa(category)
-				}
-			}
+			categoryString := categoryArrayToString(satellite.categories)
 
 			os.WriteFile(satelliteDescriptionsDir + strconv.Itoa(satellite.noradID) + "-categories", []byte(categoryString), 0644)
 			

@@ -157,6 +157,7 @@ type satellite struct {
 func main() {
 	startNoradID := flag.Int("s", 0, "Norad ID to start at")
 	endNoradID := flag.Int("e", 53000, "Norad ID to end at")
+	flag.Parse()
 	fmt.Println("Pulling satellites starting at noradID", *startNoradID, "and finishing with", *endNoradID)
 	
 	categoryChannel := make(chan map[int]string)

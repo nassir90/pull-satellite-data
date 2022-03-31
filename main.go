@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	CATEGORY_LINK_SELECTOR = ".arrow a"
-	outputDir = "descriptions/"
-	satelliteDescriptionsDir = outputDir + "satellites/"
-	categoryDescriptionsDir = outputDir + "categories/"
+	outputDir = "data/"
+	satelliteDescriptionsDir = outputDir + "satellite-descriptions/"
+	satelliteCategoriesDir = outputDir + "satellite-categories/"
+	categoryDescriptionsDir = outputDir + "category-descriptions/"
 	imagesDir = outputDir + "images/"
 )
 
@@ -38,8 +38,8 @@ func (_ NotFoundError) Error() (error string) {
 	return "Not found"
 }
 
-func pullSatelliteDescription(noradID int, nssdc_url string) (satelliteDescription string, images []image, error error) {
-	response, error := http.Get(nssdc_url)
+func pullSatelliteDescription(noradID int, nssdcURL string) (satelliteDescription string, images []image, error error) {
+	response, error := http.Get(nssdcURL)
 
 	if error == nil {
 		defer response.Body.Close()
@@ -94,7 +94,7 @@ func pullCategoryInformation(ny20CategoryURL string) (categoryDescription string
 }
 
 func spawnRequests(startNoradID, endNoradID int, categoryChannel chan map[int]string, satelliteChannel chan satellite, imagesChannel chan image, finished chan bool) {
-	interval, _ := time.ParseDuration("0.5s")
+	interval, _ := time.ParseDuration("0.3s")
 	
 	for noradID:=startNoradID; noradID<=endNoradID; noradID++ {
 		go pullSatelliteInfo(noradID, categoryChannel, satelliteChannel, imagesChannel)
@@ -228,6 +228,7 @@ func main() {
 	os.Mkdir(outputDir, 0755)
 	os.Mkdir(satelliteDescriptionsDir, 0755)
 	os.Mkdir(categoryDescriptionsDir, 0755)
+	os.Mkdir(satelliteCategoriesDir, 0755)
 	os.Mkdir(imagesDir, 0755)
 	
 	for {
@@ -249,20 +250,17 @@ func main() {
 			}
 			
 		case satellite := <-satelliteChannel:
-			fmt.Println("Received satellite with noradID", satellite.noradID)
 			if len(satellite.description) != 0 {
+				fmt.Println("Received new description for satellite with noradID", satellite.noradID)
 				path := satelliteDescriptionsDir + strconv.Itoa(satellite.noradID)
 				data := []byte(satellite.description)
 				os.WriteFile(path, data, 0644)
-				fmt.Println("\tSaved description.")
 			}
-
-			categoryString := categoryArrayToString(satellite.categories)
-
-			os.WriteFile(satelliteDescriptionsDir + strconv.Itoa(satellite.noradID) + "-categories", []byte(categoryString), 0644)
 			
-			if len(categoryString) != 0 {
-				fmt.Println("\tCategories:", categoryString)
+
+			if len(satellite.categories) != 0 {
+				categoryString := categoryArrayToString(satellite.categories)
+				os.WriteFile(satelliteCategoriesDir + strconv.Itoa(satellite.noradID), []byte(categoryString), 0644)
 			}
 
 		case image := <- imagesChannel:
